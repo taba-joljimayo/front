@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # sleepy
 
 A new Flutter project.
@@ -14,3 +15,6 @@ A few resources to get you started if this is your first Flutter project:
 For help getting started with Flutter development, view the
 [online documentation](https://docs.flutter.dev/), which offers tutorials,
 samples, guidance on mobile development, and a full API reference.
+=======
+# front
+>>>>>>> 05f882cf09c58dab2bc7bb95823f807ab7980ea5
