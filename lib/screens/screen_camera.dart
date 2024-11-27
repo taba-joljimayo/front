@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:dart_openai/dart_openai.dart';
@@ -34,6 +35,9 @@ class _CameraScreenState extends State<CameraScreen> {
   bool _isProcessing = false; // API 호출 중 상태
   bool _isConversationActive = false; // 대화 상태
 
+  bool _isStreaming = false; // 실시간 전송 상태
+  Timer? _streamTimer; // 실시간 전송용 타이머
+
   String _currentLocaleId = '';
 
   List<Map<String, String>> _conversationHistory = []; // 대화 히스토리
@@ -49,7 +53,7 @@ class _CameraScreenState extends State<CameraScreen> {
 
     // websocket 초기화
     _channel = WebSocketChannel.connect(
-      Uri.parse('ws://192.168.0.9:8080/image'),
+      Uri.parse('ws://192.168.0.15:8080/image'),
     );
 
     // WebSocket 데이터 수신 및 에러 처리
@@ -93,6 +97,30 @@ class _CameraScreenState extends State<CameraScreen> {
     } catch (e) {
       print("Error: $e");
     }
+  }
+
+  void startStreaming() {
+    if (_isStreaming) return;
+    _isStreaming = true;
+
+    //타이머 시작 (1초)
+    _streamTimer = Timer.periodic(Duration(seconds: 1), (timer) async {
+      if (!_isStreaming) {
+        timer.cancel();
+        return;
+      }
+      await _captureAndSendImage();
+    });
+
+    print("이미지 실시간 전송 시작");
+  }
+
+  void stopStreaming() {
+    if(!_isStreaming) return;
+    _isStreaming = false;
+
+    _streamTimer?.cancel();
+    print("이미지 실시간 전송 중단");
   }
 
 
@@ -299,9 +327,20 @@ class _CameraScreenState extends State<CameraScreen> {
             _isConversationActive ? "대화 중..." : "대화 대기 중",
             style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
           ),
-          ElevatedButton(
-            onPressed: _captureAndSendImage,
-            child: Text("Capture and Send"),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              ElevatedButton(
+                onPressed: () {
+                  if (_isStreaming) {
+                    stopStreaming();
+                  } else {
+                    startStreaming();
+                  }
+                },
+                child: Text(_isStreaming ? "Stop Streaming" : "Start Streaming"),
+              ),
+            ],
           ),
         ],
       ),
