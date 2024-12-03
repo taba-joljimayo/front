@@ -50,6 +50,7 @@ class _CameraScreenState extends State<CameraScreen> {
     );
     _initializeControllerFuture = _cameraController.initialize();
 
+
     // WebSocket 초기화
     try {
       _channel = WebSocketChannel.connect(
@@ -75,7 +76,6 @@ class _CameraScreenState extends State<CameraScreen> {
       //print("WebSocket 연결 중 예외 발생: $e");
       // 예외 발생 시에도 앱이 종료되지 않도록 처리
     }
-
     _initStt();
     _initTts();
     _initOpenAI();
@@ -123,38 +123,9 @@ class _CameraScreenState extends State<CameraScreen> {
 
   void stopStreaming() {
     if (!_isStreaming) return;
-    _isStreaming = false;
-
     _streamTimer?.cancel();
     print("이미지 실시간 전송 중단");
   }
-
-  // 음성 인식 초기화
-  /*void _initStt() async {
-    await Permission.microphone.request();
-    _sttEnabled = await _flutterStt.initialize(
-      onStatus: (status) {
-        print('SpeechToText Status: $status');
-        if (status == "notListening" && !_isSpeaking && !_isProcessing) {
-          _startListening();
-        }
-      },
-      onError: (error) {
-        print('SpeechToText Error: $error');
-        _startListening(); // 추가 (5)
-      },
-    );
-
-    if (_sttEnabled) {
-      print("SpeechToText initialized successfully.");
-
-      var systemLocale = await _flutterStt.systemLocale();
-      _currentLocaleId = systemLocale?.localeId ?? 'ko_KR';
-      _startListening();
-    } else {
-      print("SpeechToText initialization failed.");
-    }
-  }*/
 
   void _initStt() async {
     _sttEnabled = await _flutterStt.initialize(
@@ -201,28 +172,10 @@ class _CameraScreenState extends State<CameraScreen> {
   }
 
   // TTS 초기화
-  /*void _initTts() async {
-    await _flutterTts.setLanguage('ko-KR');
-    await _flutterTts.setSpeechRate(0.8);
-    await _flutterTts.setPitch(1.0);
-    await _flutterTts.awaitSpeakCompletion(true);
-  }*/
   void _initTts() async {
     // 사용 가능한 언어 목록 출력
     List<dynamic> languages = await _flutterTts.getLanguages;
     //print("사용 가능한 TTS 언어 목록: $languages");
-
-    /* // 오디오 세션 설정 추가(오디오 출력 오류)
-    final session = await AudioSession.instance;
-    await session.configure(AudioSessionConfiguration.speech());
-
-    // TTS 엔진에 오디오 세션 설정 적용(오디오 출력 오류)
-    await _flutterTts.setIosAudioCategory(
-      IosTextToSpeechAudioCategory.playback,
-      [
-        IosTextToSpeechAudioCategoryOptions.defaultToSpeaker,
-      ],
-    );*/
 
     // 언어 설정
     await _flutterTts.setLanguage('ko-KR');
@@ -257,30 +210,9 @@ class _CameraScreenState extends State<CameraScreen> {
       print("OpenAI API 키를 찾을 수 없습니다.");
     }
   }
-
-  // 음성 인식 시작
-  /*void _startListening() async {
-    if (_sttEnabled && !_isListening && !_isSpeaking && !_isProcessing) {
-      print("Starting STT listening...");
-      _isListening = true;
-      try {
-        await _flutterStt.listen(
-          onResult: _onSpeechResult,
-          localeId: 'ko_KR',
-          // localeId: _currentLocaleId,
-          listenFor: Duration(seconds: 30), // 최대 듣기 시간
-          pauseFor: Duration(seconds: 5), // 음성 없는 대기 시간
-        );
-      } catch (e) {
-        print("Error during STT listening: $e");
-        _isListening = false;
-      }
-    } else {
-      print('STT is not enabled or already listening.');
-    }
-  }*/
   // 지연시간 설정
   Future<void> _startListening() async {
+
     if (_sttEnabled && !_isListening && !_isSpeaking && !_isProcessing) {
       print("Starting STT listening...");
       _isListening = true;
@@ -290,10 +222,12 @@ class _CameraScreenState extends State<CameraScreen> {
           localeId: 'ko_KR',
           listenFor: Duration(seconds: 30),
           pauseFor: Duration(seconds: 5),
+
         );
       } catch (e) {
         print("Error during STT listening: $e");
         _isListening = false;
+
         // 지연을 두고 다시 시도
         Future.delayed(Duration(seconds: 1), () {
           _startListening();
@@ -304,50 +238,6 @@ class _CameraScreenState extends State<CameraScreen> {
     }
   }
 
-  // 음성 인식 결과 처리 (수정))
-  /* void _onSpeechResult(SpeechRecognitionResult result) async {
-    String userInput = result.recognizedWords.trim();
-    print("Recognized Text: $userInput");
-
-    if (!_isProcessing && !_isSpeaking) {
-      if (!_isConversationActive && userInput.contains("대화 시작")) {
-        _isConversationActive = true;
-        _isListening = false;
-        await _flutterStt.stop(); // STT 중단
-        await _collisionST("대화를 시작합니다. 말씀하세요.");
-        _startListening();
-        return;
-      }
-
-      if (_isConversationActive) {
-        _isListening = false;
-        await _flutterStt.stop(); // STT 중단
-
-        // 대화 히스토리에 사용자 입력 추가
-        _conversationHistory.add({'role': 'user', 'content': userInput});
-
-        // API 호출
-        _isProcessing = true;
-        String? gptResponse = await generateAnswer();
-        _isProcessing = false;
-
-        if (gptResponse != null && gptResponse.isNotEmpty) {
-          // 대화 히스토리에 gpt 응답 추가
-          _conversationHistory
-              .add({'role': 'assistant', 'content': gptResponse});
-          // 충돌 체크
-          await _collisionST(gptResponse);
-        } else {
-          await _collisionST("죄송합니다, 응답을 생성할 수 없습니다.");
-        }
-        // 대기시간 추가(수정)
-        Future.delayed(Duration(seconds: 1), () {
-          _startListening(); // TTS 완료 후 STT 재개
-        });
-        //_startListening(); // TTS 완료 후 STT 재개
-      }
-    }
-  }*/
   void _onSpeechResult(SpeechRecognitionResult result) {
     // 디버깅(추가 1)
     /*print(
@@ -398,10 +288,6 @@ class _CameraScreenState extends State<CameraScreen> {
             } else {
               _collisionST("죄송합니다, 응답을 생성할 수 없습니다.");
             }
-            /* 제외 (추가 1)
-            Future.delayed(Duration(seconds: 1), () {
-              _startListening(); // TTS 완료 후 STT 재개
-            });*/
           });
         }
       }
@@ -462,11 +348,21 @@ class _CameraScreenState extends State<CameraScreen> {
     }
   }
 
+  // TTS 실행
+  Future<void> _collisionST(String text) async {
+    if (_isListening) {
+      await _flutterStt.stop(); // STT 중단
+      _isListening = false;
+    }
+    _isSpeaking = true;
+    await _flutterTts.speak(text);
+    _isSpeaking = false; // TTS 완료
+  }
+
   // GPT 응답 생성
   Future<String?> generateAnswer() async {
     const String systemPrompt =
         "너는 운전 중인 사용자의 졸음을 깨우는 데 도움을 주는 챗봇 역할을 하고 있어. 친근한 친구처럼 다정하고 재미있게 대화를 이어가며, 운전자가 졸음을 이겨낼 수 있도록 도와줘. 답변은 항상 간단하고 명확하게 두 문장 이내로 작성하며 사용자를 지칭하거나 '안녕'같은 인사는 하지마, 사용자가 웃거나 대답할 수 있는 질문을 포함해. 예를 들어, '졸리면 안 돼! 내가 재미있는 얘기 하나 해줄까?' 또는 '지금 주변에 뭐 보여? 바깥 풍경 어때?'와 같이 대화해. 네 목표는 사용자가 깨어 있을 수 있도록 대화를 유도하는 거야. 또한, 답변은 명령조가 아니라 부드럽고 유쾌한 어투를 유지해야 해.너도 대답은 꼭 하고 질문도 다양하게 생각해봐. 먼저 어떤것에 흥미가 있는지 물어보고 너의 생각도 말하며 대화를 이어나가면 좋을거 같아. 요즘 시사나 문제에 대해 토론을 해보는 것도 좋을것 같아.";
-
     try {
       // 디머깅 추가(추가 2)
       print("OPEN AI API 호출 시작");
@@ -478,7 +374,8 @@ class _CameraScreenState extends State<CameraScreen> {
             role: OpenAIChatMessageRole.system,
             content: [
               OpenAIChatCompletionChoiceMessageContentItemModel.text(
-                  systemPrompt)
+                  systemPrompt
+              )
             ],
           ),
           ..._conversationHistory.map((message) {
@@ -488,7 +385,8 @@ class _CameraScreenState extends State<CameraScreen> {
                   : OpenAIChatMessageRole.assistant,
               content: [
                 OpenAIChatCompletionChoiceMessageContentItemModel.text(
-                    message['content']!)
+                    message['content']!
+                )
               ],
             );
           }).toList(),
@@ -514,6 +412,7 @@ class _CameraScreenState extends State<CameraScreen> {
       return null;
     }
   }
+
 
   @override
   Widget build(BuildContext context) {
