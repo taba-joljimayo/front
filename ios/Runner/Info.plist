@@ -6,6 +6,10 @@
     <string>your usage description here</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>your usage description here</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>앱에서 음성 인식을 위해 음성 인식 기능을 사용합니다.</string>
+
+	
 
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
