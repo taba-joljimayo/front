@@ -44,6 +44,7 @@ dependencies:
   flutter_dotenv: ^5.2.1
   dart_openai: ^5.1.0
   audio_session: ^0.1.21
+  socket_io_client: ^3.0.2
 
 dev_dependencies:
   flutter_test:
