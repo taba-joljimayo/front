@@ -27,7 +27,6 @@ class CameraScreen extends StatefulWidget {
 class _CameraScreenState extends State<CameraScreen> {
   late CameraController _cameraController;
   late Future<void> _initializeControllerFuture;
-
   // 소켓 추가
   late io.Socket _socket;
 
@@ -41,7 +40,6 @@ class _CameraScreenState extends State<CameraScreen> {
   bool _isConversationActive = false; // 대화 상태
 
   bool _isStreaming = false; // 실시간 전송 상태
-  //Timer? _streamTimer; // 실시간 전송용 타이머
   Timer? _frameTimer;
   bool _isProcessingFrame = false; // 현재 프레임 처리 중인지 확인
 
@@ -55,116 +53,91 @@ class _CameraScreenState extends State<CameraScreen> {
   int _retryCount = 0;
   int _maxRetryCount = 3;
 
-/*
-  @override
-  void initState() {
-    super.initState();
-    _cameraController = CameraController(
-      widget.camera,
-      ResolutionPreset.high,
-    );
-    _initializeControllerFuture = _cameraController.initialize();
-
-    // WebSocket 초기화
-    try {
-      _channel = WebSocketChannel.connect(
-        Uri.parse('ws://192.168.0.15:8080/image'),
-      );
-
-      // WebSocket 데이터 수신 및 에러 처리
-      _channel.stream.listen(
-        (data) {
-          //print("서버로부터 데이터 수신: $data");
-        },
-        onError: (error) {
-          //print("WebSocket 에러: $error");
-          // 필요한 경우 재연결 로직 추가
-        },
-        onDone: () {
-          //print("WebSocket 연결 종료");
-          // 필요한 경우 재연결 로직 추가
-        },
-        //cancelOnError: false, // 에러 발생 시 스트림이 닫히지 않도록 설정
-      );
-    } catch (e) {
-      //print("WebSocket 연결 중 예외 발생: $e");
-      // 예외 발생 시에도 앱이 종료되지 않도록 처리
-    }
-
-    _initStt();
-    _initTts();
-    _initOpenAI();
-  }
-
-  @override
-  void dispose() {
-    _cameraController.dispose();
-    _channel.sink.close();
-    _responseWaitTimer?.cancel(); // 타이머 취소
-    super.dispose();
-  }
-
-  Future<void> _captureAndSendImage() async {
-    try {
-      await _initializeControllerFuture;
-
-      final image = await _cameraController.takePicture();
-      final bytes = await image.readAsBytes();
-      final base64Image = base64Encode(bytes);
-
-      // 웹소켓으로 이미지 전송
-      _channel.sink.add(base64Image);
-      //print("이미지 전송 완료");
-      //print("Base64 Image (First 100 chars): ${base64Image.length}");
-    } catch (e) {
-      //print("Error: $e");
-    }
-  }*/
   // 기존 수정 socket.io로 변경
   @override
   void initState() {
     super.initState();
+
+    // 카메라 컨트롤러 초기화
     _cameraController = CameraController(
       widget.camera,
       ResolutionPreset.high,
     );
     _initializeControllerFuture = _cameraController.initialize();
 
-    // Socket.io 초기화
-    _socket = io.io('http://192.168.0.15:5000', <String, dynamic>{
-      'transports': ['websocket'],
-      'autoConnect': true,
-    });
+    // 순서를 조정하여 STT 초기화를 가장 먼저 수행합니다.
+    try {
+      _initStt();
+    } catch (e) {
+      print("STT 초기화 중 오류 발생: $e");
+    }
 
-    // 서버 연결 이벤트
-    _socket.onConnect((_) {
-      print('Socket.IO 서버에 연결되었습니다.');
-    });
+    try {
+      // Socket.io 초기화
+      _socket =
+          io.io('https://456c-34-45-15-204.ngrok-free.app', <String, dynamic>{
+        'transports': ['websocket'],
+        'path': '/socket.io', // 경로 표시
+        'autoConnect': true,
+        'timeout': 10000,
+        'reconnetcion': true,
+        'reconnectionAttempts': 5,
+        'reconnectionDelay': 2000,
+        'extraHeaders': {
+          'ngrok-skip-browser-warning': 'true',
+        },
+      });
 
-    // 서버로부터 데이터 수신
-    _socket.on('result', (data) {
-      print("서버로부터 데이터 수신: $data");
-      // 수신된 데이터를 처리 (예: 상태를 업데이트)
-      if (data is Map && data['status'] == 'success') {
-        final int result = data['result'];
-        print(result == 1 ? "두 눈 감음" : "두 눈 뜸");
-      } else {
-        print("에러 메시지: ${data['message']}");
-      }
-    });
+      // 서버 연결 이벤트
+      _socket.onConnect((_) {
+        print('Socket.IO 서버에 연결되었습니다.');
+      });
+      _socket.onConnectError((error) => print('연결 오류: $error'));
+      // 서버로부터 데이터 수신
+      _socket.on('result', (data) {
+        try {
+          print("서버로부터 데이터 수신: $data");
+          // 수신된 데이터를 처리 (예: 상태를 업데이트)
+          if (data is Map && data['status'] == 'success') {
+            final int result = data['result'];
+            print(result == 1 ? "두 눈 감음" : "두 눈 뜸");
+          } else {
+            print("에러 메시지: ${data['message']}");
+          }
+        } catch (e) {
+          print("서버로부터 수신한 데이터 처리 중 오류 발생: $e");
+        }
+      });
 
-    // 에러 및 연결 종료 이벤트 처리
-    _socket.onError((error) {
-      print("Socket.IO 에러: $error");
-    });
+      // 에러 및 연결 종료 이벤트 처리
+      _socket.onError((error) {
+        print("Socket.IO 에러: $error");
+      });
 
-    _socket.onDisconnect((_) {
-      print("Socket.IO 연결 종료");
-    });
+      _socket.onDisconnect((_) {
+        print("Socket.IO 연결 종료");
+      });
+    } catch (e) {
+      print("Socket.IO 초기화 중 오류 발생: $e");
+    }
 
-    _initStt();
-    _initTts();
-    _initOpenAI();
+    try {
+      _initStt();
+    } catch (e) {
+      print("STT 초기화 중 오류 발생: $e");
+    }
+
+    try {
+      _initTts();
+    } catch (e) {
+      print("TTS 초기화 중 오류 발생: $e");
+    }
+
+    try {
+      _initOpenAI();
+    } catch (e) {
+      print("OpenAI 초기화 중 오류 발생: $e");
+    }
   }
 
   @override
@@ -199,7 +172,7 @@ class _CameraScreenState extends State<CameraScreen> {
           // 서버로 전송
           if (bytes != null) {
             _socket.emit('process_image', bytes);
-            print("이미지 바이너리 데이터 전송 완료");
+            //print("이미지 바이너리 데이터 전송 완료");
           }
 
           _isProcessingFrame = false;
@@ -283,6 +256,7 @@ class _CameraScreenState extends State<CameraScreen> {
       //print("SpeechToText initialized successfully.");
       var systemLocale = await _flutterStt.systemLocale();
       _currentLocaleId = systemLocale?.localeId ?? 'ko_KR';
+      //print("현재 설정된 STT 로케일: $_currentLocaleId"); // 로케일 확인 로그 추가
       _startListening();
     } else {
       //print("SpeechToText initialization failed.");

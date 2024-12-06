@@ -36,7 +36,6 @@ dependencies:
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.6
   camera: ^0.11.0+2
-  speech_to_text: ^7.0.0
   permission_handler: ^11.3.1
   flutter_tts: ^4.0.2
   http: ^1.2.2
@@ -44,13 +43,11 @@ dependencies:
   flutter_dotenv: ^5.2.1
   dart_openai: ^5.1.0
   audio_session: ^0.1.21
-<<<<<<< HEAD
-  socket_io_client: ^3.0.2
-=======
+
   dio: ^5.7.0
   socket_io_client: ^3.0.2
-  web_socket_channel: ^2.4.5
->>>>>>> de102763483f2ab96fa032eb238035ff61164bbc
+  web_socket_channel: ^2.4.0
+  speech_to_text: ^6.6.2
 
 dev_dependencies:
   flutter_test:
