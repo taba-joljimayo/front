@@ -12,7 +12,6 @@ import 'package:speech_to_text/speech_to_text.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
-// 소켓 수정
 import 'package:socket_io_client/socket_io_client.dart' as io;
 
 class CameraScreen extends StatefulWidget {
@@ -27,57 +26,70 @@ class CameraScreen extends StatefulWidget {
 class _CameraScreenState extends State<CameraScreen> {
   late CameraController _cameraController;
   late Future<void> _initializeControllerFuture;
-  // 소켓 추가
-  late io.Socket _socket;
 
   final SpeechToText _flutterStt = SpeechToText();
   final FlutterTts _flutterTts = FlutterTts();
 
   bool _sttEnabled = false;
-  bool _isListening = false; // STT 활성 상태
-  bool _isSpeaking = false; // TTS 활성 상태
-  bool _isProcessing = false; // API 호출 중 상태
-  bool _isConversationActive = false; // 대화 상태
+  bool _isListening = false;
+  bool _isSpeaking = false;
+  bool _isProcessing = false;
+  bool _isConversationActive = false;
 
-  bool _isStreaming = false; // 실시간 전송 상태
+  bool _isStreaming = false;
   Timer? _frameTimer;
-  bool _isProcessingFrame = false; // 현재 프레임 처리 중인지 확인
+  bool _isProcessingFrame = false;
 
   String _currentLocaleId = '';
+  List<Map<String, String>> _conversationHistory = [];
 
-  List<Map<String, String>> _conversationHistory = []; // 대화 히스토리
-
-  // 추가된 상태 변수
-  Timer? _responseWaitTimer; // 사용자 응답 대기 타이머
-  bool _awaitingUserResponse = false; // 사용자 응답 대기 상태
+  Timer? _responseWaitTimer;
+  bool _awaitingUserResponse = false;
   int _retryCount = 0;
   int _maxRetryCount = 3;
 
-  // 기존 수정 socket.io로 변경
+  // socket.io 객체
+  late io.Socket _socket;
+
+  // socket에서 오는 'result' 이벤트를 Stream으로 노출하기 위한 컨트롤러
+  final _socketController = StreamController<dynamic>();
+
   @override
   void initState() {
     super.initState();
-
-    // 카메라 컨트롤러 초기화
     _cameraController = CameraController(
       widget.camera,
       ResolutionPreset.high,
     );
     _initializeControllerFuture = _cameraController.initialize();
 
-    // 순서를 조정하여 STT 초기화를 가장 먼저 수행합니다.
-    try {
-      _initStt();
-    } catch (e) {
-      print("STT 초기화 중 오류 발생: $e");
-    }
+    // STT, TTS, OpenAI 초기화
+    _initStt();
+    _initTts();
+    _initOpenAI();
 
-    try {
-      // Socket.io 초기화
-      _socket =
-          io.io('https://456c-34-45-15-204.ngrok-free.app', <String, dynamic>{
+    // Socket.io 초기화
+    _initSocket();
+
+    // 소켓으로부터 오는 result 이벤트를 비동기 처리할 핸들러 시작
+    _handleSocketResults();
+  }
+
+  @override
+  void dispose() {
+    _cameraController.dispose();
+    _socket.disconnect();
+    _socketController.close(); // 스트림 컨트롤러 닫기
+    super.dispose();
+  }
+
+  void _initSocket() {
+    _socket = io.io(
+      'http://192.168.0.7:5000',
+      <String, dynamic>{
         'transports': ['websocket'],
-        'path': '/socket.io', // 경로 표시
+        'path': '/socket.io',
+        'secure': true,
         'autoConnect': true,
         'timeout': 10000,
         'reconnetcion': true,
@@ -86,65 +98,76 @@ class _CameraScreenState extends State<CameraScreen> {
         'extraHeaders': {
           'ngrok-skip-browser-warning': 'true',
         },
-      });
+      },
+    );
 
-      // 서버 연결 이벤트
-      _socket.onConnect((_) {
-        print('Socket.IO 서버에 연결되었습니다.');
-      });
-      _socket.onConnectError((error) => print('연결 오류: $error'));
-      // 서버로부터 데이터 수신
-      _socket.on('result', (data) {
-        try {
-          print("서버로부터 데이터 수신: $data");
-          // 수신된 데이터를 처리 (예: 상태를 업데이트)
-          if (data is Map && data['status'] == 'success') {
-            final int result = data['result'];
-            print(result == 1 ? "두 눈 감음" : "두 눈 뜸");
-          } else {
-            print("에러 메시지: ${data['message']}");
+    _socket.onConnect((_) {
+      print('Socket.IO 서버에 연결되었습니다.');
+    });
+
+    _socket.onConnectError((error) => print('연결 오류: $error'));
+
+    // 'result' 이벤트가 오면 _socketController에 add
+    _socket.on('result', (data) {
+      _socketController.add(data);
+    });
+
+    _socket.onError((error) {
+      //print("Socket.IO 에러: $error");
+    });
+
+    _socket.onDisconnect((_) {
+      print("Socket.IO 연결 종료");
+    });
+  }
+
+  int closedEyesCount = 0; // 눈 감은 상태 카운트
+
+  Future<void> _handleSocketResults() async {
+    await for (final data in _socketController.stream) {
+      try {
+        print("서버로부터 데이터 수신: $data");
+
+        final int result = int.tryParse(data.toString()) ?? -1;
+
+        if (result == 1) {
+          // 눈을 뜬 경우
+          closedEyesCount = 0; // 카운트를 0으로 리셋
+          print("두 눈을 뜸, 카운트 리셋: $closedEyesCount");
+        } else if (result == 0) {
+          // 눈을 감음 경우
+          closedEyesCount++; // 카운트 증가
+          print("두 눈을 감음 카운트: $closedEyesCount");
+
+          if (closedEyesCount == 30) {
+            // 30번 연속 눈 감음 감지 -> 챗봇이 먼저 말 걸기
+            print("30번 눈 감음 연속 감지, 대화 시작");
+            closedEyesCount = 0; // 카운트 리셋
+            _startConversation(); // 너가 먼저 말을 거는 로직
           }
-        } catch (e) {
-          print("서버로부터 수신한 데이터 처리 중 오류 발생: $e");
+        } else {
+          print("예상치 못한 값: $result");
         }
-      });
-
-      // 에러 및 연결 종료 이벤트 처리
-      _socket.onError((error) {
-        print("Socket.IO 에러: $error");
-      });
-
-      _socket.onDisconnect((_) {
-        print("Socket.IO 연결 종료");
-      });
-    } catch (e) {
-      print("Socket.IO 초기화 중 오류 발생: $e");
-    }
-
-    try {
-      _initStt();
-    } catch (e) {
-      print("STT 초기화 중 오류 발생: $e");
-    }
-
-    try {
-      _initTts();
-    } catch (e) {
-      print("TTS 초기화 중 오류 발생: $e");
-    }
-
-    try {
-      _initOpenAI();
-    } catch (e) {
-      print("OpenAI 초기화 중 오류 발생: $e");
+      } catch (e) {
+        print("서버로부터 수신한 데이터 처리 중 오류 발생: $e");
+      }
     }
   }
 
-  @override
-  void dispose() {
-    _cameraController.dispose();
-    _socket.disconnect();
-    super.dispose();
+  void _startConversation() async {
+    // 챗봇이 먼저 말 걸기
+    await _collisionST("졸면 안 돼! 내가 재미있는 얘기 하나 해줄까?");
+
+    // 여기서 OpenAI API를 호출하여 자동으로 응답을 생성
+    String? gptResponse = await generateAnswer();
+
+    if (gptResponse != null && gptResponse.isNotEmpty) {
+      // OpenAI 응답을 TTS로 출력
+      await _collisionST(gptResponse);
+    } else {
+      // 응답 생성 실패 시 대체 문구 출력
+      await _collisionST("지금은 딱히 생각나는 이야기가 없어. 혹시 바깥 풍경이 어때?");
+    }
   }
 
   Future<void> _startImageStreaming() async {
@@ -156,7 +179,7 @@ class _CameraScreenState extends State<CameraScreen> {
       _isStreaming = true;
       _cameraController.startImageStream((CameraImage cameraImage) {
         if (!_isStreaming || _isProcessingFrame) return;
-        // 프레임 처리 주기 설정 (초당 10프레임 = 100ms)
+
         _frameTimer ??=
             Timer.periodic(Duration(milliseconds: 100), (timer) async {
           if (!_isStreaming) {
@@ -166,13 +189,10 @@ class _CameraScreenState extends State<CameraScreen> {
 
           _isProcessingFrame = true;
 
-          // 이미지 데이터를 raw bytes로 변환
           final bytes = _convertCameraImageToRawBytes(cameraImage);
 
-          // 서버로 전송
           if (bytes != null) {
             _socket.emit('process_image', bytes);
-            //print("이미지 바이너리 데이터 전송 완료");
           }
 
           _isProcessingFrame = false;
@@ -190,22 +210,22 @@ class _CameraScreenState extends State<CameraScreen> {
     if (!_isStreaming) return;
 
     _isStreaming = false;
-
-    // 타이머 중지
     _frameTimer?.cancel();
     _frameTimer = null;
-
     _cameraController.stopImageStream();
     print("이미지 실시간 스트리밍 중단");
   }
 
   Uint8List? _convertCameraImageToRawBytes(CameraImage cameraImage) {
     try {
-      // YUV 포맷을 JPEG로 변환 (최적화 가능)
-      final bytes = Uint8List.fromList(cameraImage.planes[0].bytes);
-      return bytes;
+      // YUV 형식 데이터를 단순히 concat하는 방식 (간단히 설명)
+      final WriteBuffer allBytes = WriteBuffer();
+      for (final Plane plane in cameraImage.planes) {
+        allBytes.putUint8List(plane.bytes);
+      }
+      return allBytes.done().buffer.asUint8List();
     } catch (e) {
-      print("Error converting image: $e");
+      print("Error converting CameraImage to raw bytes: $e");
       return null;
     }
   }
@@ -221,17 +241,13 @@ class _CameraScreenState extends State<CameraScreen> {
   void _initStt() async {
     _sttEnabled = await _flutterStt.initialize(
       onStatus: (status) {
-        //print('SpeechToText Status: $status');
         if (status == "listening") {
           if (!_isListening) {
             _isListening = true;
-            //print("STT가 시작되었습니다.");
           }
         } else if (status == "notListening") {
           if (_isListening) {
             _isListening = false;
-            //print("STT가 중단되었습니다.");
-            // 현재 TTS나 처리 중이 아니라면 STT 재시작
             if (!_isSpeaking && !_isProcessing) {
               Future.delayed(Duration(milliseconds: 500), () {
                 _startListening();
@@ -241,9 +257,7 @@ class _CameraScreenState extends State<CameraScreen> {
         }
       },
       onError: (error) {
-        //print('SpeechToText Error: $error');
         _isListening = false;
-        // 에러 발생 시 STT 재시작
         if (!_isSpeaking && !_isProcessing) {
           Future.delayed(Duration(seconds: 1), () {
             _startListening();
@@ -253,45 +267,24 @@ class _CameraScreenState extends State<CameraScreen> {
     );
 
     if (_sttEnabled) {
-      //print("SpeechToText initialized successfully.");
       var systemLocale = await _flutterStt.systemLocale();
       _currentLocaleId = systemLocale?.localeId ?? 'ko_KR';
-      //print("현재 설정된 STT 로케일: $_currentLocaleId"); // 로케일 확인 로그 추가
       _startListening();
-    } else {
-      //print("SpeechToText initialization failed.");
     }
   }
 
-  // TTS 초기화
   void _initTts() async {
-    // 사용 가능한 언어 목록 출력
-    List<dynamic> languages = await _flutterTts.getLanguages;
-    //print("사용 가능한 TTS 언어 목록: $languages");
-
-    // 언어 설정
     await _flutterTts.setLanguage('ko-KR');
     print("TTS 언어가 'ko-KR'로 설정되었습니다.");
 
     await _flutterTts.setSpeechRate(0.8);
     await _flutterTts.setPitch(1.0);
     await _flutterTts.awaitSpeakCompletion(true);
-
-    // TTS 상태 및 에러 콜백 추가
-    _flutterTts.setStartHandler(() {
-      //print("TTS가 시작되었습니다.");
-    });
-
-    _flutterTts.setCompletionHandler(() {
-      //print("TTS가 완료되었습니다.");
-    });
-
-    _flutterTts.setErrorHandler((msg) {
-      //print("TTS 에러: $msg");
-    });
+    _flutterTts.setStartHandler(() {});
+    _flutterTts.setCompletionHandler(() {});
+    _flutterTts.setErrorHandler((msg) {});
   }
 
-  // OpenAI 초기화
   void _initOpenAI() async {
     await dotenv.load(fileName: '.env');
     String? apiKey = dotenv.env['OPEN_AI_API_KEY'];
@@ -303,7 +296,6 @@ class _CameraScreenState extends State<CameraScreen> {
     }
   }
 
-  // 음성 인식 시작
   Future<void> _startListening() async {
     if (_sttEnabled && !_isListening && !_isSpeaking && !_isProcessing) {
       print("Starting STT listening...");
@@ -318,7 +310,6 @@ class _CameraScreenState extends State<CameraScreen> {
       } catch (e) {
         print("Error during STT listening: $e");
         _isListening = false;
-        // 지연을 두고 다시 시도
         Future.delayed(Duration(seconds: 1), () {
           _startListening();
         });
@@ -328,40 +319,35 @@ class _CameraScreenState extends State<CameraScreen> {
     }
   }
 
-  // 음성 인식 결과 처리
   void _onSpeechResult(SpeechRecognitionResult result) {
     if (result.finalResult) {
       String userInput = result.recognizedWords.trim();
       print("Recognized Final Text: $userInput");
 
-      // 정규표현식 패턴 목록
+      // 내비게이션 관련 단어/문구 패턴
       List<RegExp> excludedPatterns = [
         RegExp(r'좌회전'),
         RegExp(r'우회전'),
         RegExp(r'직진'),
-        RegExp(r'\d+미터 앞에'), // 숫자+미터 앞에서
+        RegExp(r'\d+미터 앞에'),
         RegExp(r'목적지'),
         RegExp(r'제한속도'),
         RegExp(r'지하차도'),
-        RegExp(r'어린이보호구역'),
-        // 추가 패턴
+        RegExp(r'어린이 보호구역'),
       ];
 
-      // 제외할 패턴을 제거
+      // 내비게이션 단어 있으면 무시
       for (RegExp pattern in excludedPatterns) {
-        userInput = userInput.replaceAll(pattern, '');
+        if (pattern.hasMatch(userInput)) {
+          print("네비게이션 관련 단어 감지됨, 결과 무시");
+          Future.delayed(Duration(seconds: 1), () {
+            _startListening();
+          });
+          return;
+        }
       }
 
-      // 공백 제거 후, 남은 텍스트가 있는지 확인
-      userInput = userInput.trim();
-
-      if (userInput.isEmpty) {
-        print("제외할 단어만 포함되어 있어 결과를 무시합니다.");
-        // STT 재시작 또는 필요한 처리를 합니다.
-        return;
-      }
-
-      // 사용자가 응답했으므로 응답 대기 타이머 취소
+      // 여기까지 오면 네비게이션 단어 없음
       _responseWaitTimer?.cancel();
       _awaitingUserResponse = false;
       _retryCount = 0;
@@ -370,7 +356,7 @@ class _CameraScreenState extends State<CameraScreen> {
         if (!_isConversationActive && userInput.contains("대화 시작")) {
           _isConversationActive = true;
           _isListening = false;
-          _flutterStt.stop(); // STT 중단
+          _flutterStt.stop();
           _collisionST("대화를 시작합니다. 말씀하세요.");
           Future.delayed(Duration(seconds: 1), () {
             _startListening();
@@ -380,12 +366,10 @@ class _CameraScreenState extends State<CameraScreen> {
 
         if (_isConversationActive) {
           _isListening = false;
-          _flutterStt.stop(); // STT 중단
+          _flutterStt.stop();
 
-          // 대화 히스토리에 사용자 입력 추가
           _conversationHistory.add({'role': 'user', 'content': userInput});
 
-          // OpenAI API 호출
           _isProcessing = true;
           generateAnswer().then((gptResponse) {
             _isProcessing = false;
@@ -409,46 +393,37 @@ class _CameraScreenState extends State<CameraScreen> {
     print("TTS 함수 호출됨. 출력할 텍스트: $text");
 
     if (_isListening) {
-      await _flutterStt.stop(); // STT 중단
+      await _flutterStt.stop();
       _isListening = false;
       print("STT 중단됨.");
     }
     _isSpeaking = true;
 
-    // TTS 에러 핸들링 추가
     try {
-      // 텍스트를 문장 단위로 분할
       List<String> sentences = text.split(RegExp(r'[.?!]'));
       for (String sentence in sentences) {
         sentence = sentence.trim();
         if (sentence.isNotEmpty) {
-          // 텍스트에서 이모지나 특수문자 제거
           String sanitizedText = sentence.replaceAll(
               RegExp(r'[^\u0000-\u007F\uAC00-\uD7A3]+'), '');
           print("TTS에 전달될 텍스트: $sanitizedText");
           await _flutterTts.speak(sanitizedText);
           print("TTS 실행 완료.");
-          // 각 문장의 발화를 기다림
           await _flutterTts.awaitSpeakCompletion(true);
         }
       }
     } catch (e) {
       print("TTS 실행 중 에러 발생: $e");
     } finally {
-      _isSpeaking = false; // TTS 완료 또는 실패 시
-
-      // TTS가 완료되었으므로 STT 재시작
+      _isSpeaking = false;
       Future.delayed(Duration(seconds: 1), () {
         _startListening();
-
-        // 사용자 응답 대기 타이머 시작
         _startResponseWaitTimer();
       });
     }
   }
 
   void _startResponseWaitTimer() {
-    // 기존 타이머가 있다면 취소
     _responseWaitTimer?.cancel();
     _awaitingUserResponse = true;
     _retryCount++;
@@ -459,30 +434,23 @@ class _CameraScreenState extends State<CameraScreen> {
       return;
     }
 
-    // 예시 문구 리스트 생성
     List<String> retryMessages = [
       "제가 잘 들을 수 있도록 다시 한번 말해주라?",
       "죄송하지만 못 들었어요. 다시 말해 줄 수 있어?",
       "정신 차려 ! 너 졸고 있는거 아니지?"
     ];
 
-    // Random 객체 생성
     final random = Random();
 
-    // 응답 대기 타이머 시작 (예: 5초)
-    _responseWaitTimer = Timer(Duration(seconds: 5), () {
+    _responseWaitTimer = Timer(Duration(seconds: 10), () {
       if (_awaitingUserResponse) {
-        // 랜덤으로 문구 선택
         String randomMessage =
             retryMessages[random.nextInt(retryMessages.length)];
-
-        // 사용자가 응답하지 않았으므로 다시 질문
         _collisionST(randomMessage);
       }
     });
   }
 
-  // GPT 응답 생성
   Future<String?> generateAnswer() async {
     const String systemPrompt = "너는 운전 중인 사용자의 졸음을 깨우는 데 도움을 주는 챗봇 역할을 하고 있어. "
         "친근한 친구처럼 다정하고 재미있게 대화를 이어가며, 운전자가 졸음을 이겨낼 수 있도록 도와줘. "
@@ -491,14 +459,20 @@ class _CameraScreenState extends State<CameraScreen> {
         "'지금 주변에 뭐 보여? 바깥 풍경 어때?'와 같이 대화해. 네 목표는 사용자가 깨어 있을 수 있도록 대화를 유도하는 거야. "
         "또한, 답변은 명령조가 아니라 부드럽고 유쾌한 어투를 유지해야 해. "
         "너도 대답은 꼭 하고 질문도 다양하게 생각해봐. 먼저 어떤 것에 흥미가 있는지 물어보고 너의 생각도 말하며 대화를 이어나가면 좋을 것 같아. "
-        "요즘 시사나 문제에 대해 토론을 해보는 것도 좋을 것 같아."
-        "좀 신나고 재미있게 해주면 좋을거 같아. 노래도 불러달라고 하면 불러주고 농담도 해주면 좋을거 같아. ";
+        "요즘 시사나 문제에 대해 토론을 해보는 것도 좋을 것 같아. "
+        "좀 신나고 재미있게 해주면 좋을거 같아. 노래도 불러달라고 하면 불러주고 농담도 해주면 좋을거 같아. "
+        "차 안에서 할 수 있는 간단한 퀴즈나 게임을 제안해도 좋아. 예를 들어, '지금 주변에 빨간색 물체 몇 개 보여?'처럼 간단한 집중력 게임을 제안해봐. "
+        "사용자가 피곤해 보이면 상냥하고 재밌는 방식으로 기분 전환을 유도해봐. "
+        "가끔은 사용자가 좋아할만한 흥미로운 잡학 지식이나 가벼운 소식거리를 짧게 던져주는 것도 좋아. "
+        "절대 사용자를 비난하거나 공격적인 표현을 쓰지 말고, 항상 응원하고 격려하는 친구 같은 태도를 유지해. "
+        "두 문장 이내의 간단한 답변, 그리고 마지막 문장에는 사용자가 대답하거나 반응할 수 있는 질문을 포함하는 것을 잊지마."
+        "";
 
     try {
       print("OPEN AI API 호출 시작");
 
       final response = await OpenAI.instance.chat.create(
-        model: "gpt-4o-mini", // 모델 이름 수정
+        model: "gpt-3.5-turbo",
         messages: [
           OpenAIChatCompletionChoiceMessageModel(
             role: OpenAIChatMessageRole.system,
@@ -528,9 +502,8 @@ class _CameraScreenState extends State<CameraScreen> {
     } catch (e, stackTrace) {
       print("OpenAI API 호출 중 에러 발생: $e");
       print("스택 트레이스: $stackTrace");
-      _isProcessing = false; // 상태 변수 업데이트
+      _isProcessing = false;
 
-      // 예외 발생 시 STT 재시작
       if (!_isListening && !_isSpeaking) {
         Future.delayed(Duration(seconds: 1), () {
           _startListening();
