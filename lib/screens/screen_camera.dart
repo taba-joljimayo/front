@@ -92,12 +92,9 @@ class _CameraScreenState extends State<CameraScreen> {
         'secure': true,
         'autoConnect': true,
         'timeout': 10000,
-        'reconnetcion': true,
-        'reconnectionAttempts': 5,
-        'reconnectionDelay': 2000,
-        'extraHeaders': {
-          'ngrok-skip-browser-warning': 'true',
-        },
+        //'reconnetcion': true,
+        //'reconnectionAttempts': 5,
+        //'reconnectionDelay': 2000,
       },
     );
 
@@ -180,6 +177,7 @@ class _CameraScreenState extends State<CameraScreen> {
       _cameraController.startImageStream((CameraImage cameraImage) {
         if (!_isStreaming || _isProcessingFrame) return;
 
+        // 프레임 처리 주기 설정 (예: 초당 10프레임)
         _frameTimer ??=
             Timer.periodic(Duration(milliseconds: 100), (timer) async {
           if (!_isStreaming) {
@@ -189,10 +187,15 @@ class _CameraScreenState extends State<CameraScreen> {
 
           _isProcessingFrame = true;
 
+          // 이미지 데이터를 Byte 형식으로 변환
           final bytes = _convertCameraImageToRawBytes(cameraImage);
 
           if (bytes != null) {
+            // 서버로 전송
             _socket.emit('process_image', bytes);
+            //print("이미지 바이트 데이터 전송 완료");
+          } else {
+            print("이미지 바이트 변환 실패");
           }
 
           _isProcessingFrame = false;
@@ -218,7 +221,7 @@ class _CameraScreenState extends State<CameraScreen> {
 
   Uint8List? _convertCameraImageToRawBytes(CameraImage cameraImage) {
     try {
-      // YUV 형식 데이터를 단순히 concat하는 방식 (간단히 설명)
+      // YUV 데이터의 각 Plane을 합쳐서 하나의 Uint8List로 반환
       final WriteBuffer allBytes = WriteBuffer();
       for (final Plane plane in cameraImage.planes) {
         allBytes.putUint8List(plane.bytes);
@@ -298,7 +301,7 @@ class _CameraScreenState extends State<CameraScreen> {
 
   Future<void> _startListening() async {
     if (_sttEnabled && !_isListening && !_isSpeaking && !_isProcessing) {
-      print("Starting STT listening...");
+      //print("Starting STT listening...");
       _isListening = true;
       try {
         await _flutterStt.listen(
