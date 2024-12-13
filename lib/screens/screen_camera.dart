@@ -1,17 +1,16 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:math';
+
+import 'package:image/image.dart' as img;
 
 import 'package:dart_openai/dart_openai.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
-import 'package:permission_handler/permission_handler.dart';
 import 'package:speech_to_text/speech_recognition_result.dart';
 import 'package:speech_to_text/speech_to_text.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
-import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:socket_io_client/socket_io_client.dart' as io;
 
 class CameraScreen extends StatefulWidget {
@@ -123,27 +122,34 @@ class _CameraScreenState extends State<CameraScreen> {
   Future<void> _handleSocketResults() async {
     await for (final data in _socketController.stream) {
       try {
-        print("서버로부터 데이터 수신: $data");
+        // 수신 데이터 출력
+        print("서버로부터 데이터 수신: $data (타입: ${data.runtimeType})");
 
-        final int result = int.tryParse(data.toString()) ?? -1;
+        // 데이터가 정수인지 확인
+        if (data is int) {
+          final int result = data;
 
-        if (result == 1) {
-          // 눈을 뜬 경우
-          closedEyesCount = 0; // 카운트를 0으로 리셋
-          print("두 눈을 뜸, 카운트 리셋: $closedEyesCount");
-        } else if (result == 0) {
-          // 눈을 감음 경우
-          closedEyesCount++; // 카운트 증가
-          print("두 눈을 감음 카운트: $closedEyesCount");
+          if (result == 1) {
+            // 눈을 뜬 경우
+            closedEyesCount = 0; // 카운트를 0으로 리셋
+            print("두 눈을 뜸, 카운트 리셋: $closedEyesCount");
+          } else if (result == 0) {
+            // 눈을 감음 경우
+            closedEyesCount++; // 카운트 증가
+            print("두 눈을 감음 카운트: $closedEyesCount");
 
-          if (closedEyesCount == 30) {
-            // 30번 연속 눈 감음 감지 -> 챗봇이 먼저 말 걸기
-            print("30번 눈 감음 연속 감지, 대화 시작");
-            closedEyesCount = 0; // 카운트 리셋
-            _startConversation(); // 너가 먼저 말을 거는 로직
+            if (closedEyesCount == 10) {
+              // 30번 연속 눈 감음 감지 -> 챗봇이 먼저 말 걸기
+              print("30번 눈 감음 연속 감지, 대화 시작");
+              closedEyesCount = 0; // 카운트 리셋
+              _startConversation(); // 너가 먼저 말을 거는 로직
+            }
+          } else {
+            closedEyesCount++;
+            print("예상치 못한 값: $result");
           }
         } else {
-          print("예상치 못한 값: $result");
+          print("잘못된 데이터 형식: ${data.runtimeType}, 값: $data");
         }
       } catch (e) {
         print("서버로부터 수신한 데이터 처리 중 오류 발생: $e");
@@ -174,32 +180,32 @@ class _CameraScreenState extends State<CameraScreen> {
       await _initializeControllerFuture;
 
       _isStreaming = true;
-      _cameraController.startImageStream((CameraImage cameraImage) {
+
+      // 타이머로 캡처 주기 설정
+      _frameTimer = Timer.periodic(Duration(milliseconds: 300), (timer) async {
         if (!_isStreaming || _isProcessingFrame) return;
 
-        // 프레임 처리 주기 설정 (예: 초당 10프레임)
-        _frameTimer ??=
-            Timer.periodic(Duration(milliseconds: 100), (timer) async {
-          if (!_isStreaming) {
-            timer.cancel();
-            return;
-          }
+        _isProcessingFrame = true;
 
-          _isProcessingFrame = true;
+        try {
+          // 현재 카메라 프레임 캡처
+          final cameraImage = await _cameraController.takePicture();
 
           // 이미지 데이터를 Byte 형식으로 변환
-          final bytes = _convertCameraImageToRawBytes(cameraImage);
+          final bytes = await _processCapturedImage(cameraImage);
 
           if (bytes != null) {
             // 서버로 전송
             _socket.emit('process_image', bytes);
-            //print("이미지 바이트 데이터 전송 완료");
+            print("이미지 전송 시도 시간: ${DateTime.now()}");
           } else {
             print("이미지 바이트 변환 실패");
           }
-
+        } catch (e) {
+          print("이미지 처리 중 오류 발생: $e");
+        } finally {
           _isProcessingFrame = false;
-        });
+        }
       });
 
       print("이미지 실시간 스트리밍 시작");
@@ -219,16 +225,71 @@ class _CameraScreenState extends State<CameraScreen> {
     print("이미지 실시간 스트리밍 중단");
   }
 
-  Uint8List? _convertCameraImageToRawBytes(CameraImage cameraImage) {
+  // Uint8List? _convertCameraImageToJPEG(CameraImage cameraImage) {
+  //   try {
+  //     final int width = cameraImage.width;
+  //     final int height = cameraImage.height;
+  //
+  //     // YUV 데이터를 RGB로 변환
+  //     final img.Image rgbImage = img.Image(width, height);
+  //
+  //     for (int y = 0; y < height; y++) {
+  //       for (int x = 0; x < width; x++) {
+  //         final int uvIndex = (y ~/ 2) * cameraImage.planes[1].bytesPerRow +
+  //             (x ~/ 2) * cameraImage.planes[1].bytesPerPixel!;
+  //         final int yIndex = y * cameraImage.planes[0].bytesPerRow + x;
+  //
+  //         final int yValue = cameraImage.planes[0].bytes[yIndex];
+  //         final int uValue = cameraImage.planes[1].bytes[uvIndex];
+  //         final int vValue = cameraImage.planes[2].bytes[uvIndex];
+  //
+  //         final int r = (yValue + 1.402 * (vValue - 128)).clamp(0, 255).toInt();
+  //         final int g = (yValue - 0.344 * (uValue - 128) - 0.714 * (vValue - 128))
+  //             .clamp(0, 255)
+  //             .toInt();
+  //         final int b = (yValue + 1.772 * (uValue - 128)).clamp(0, 255).toInt();
+  //
+  //         rgbImage.setPixel(x, y, img.getColor(r, g, b));
+  //       }
+  //     }
+  //
+  //     // 이미지를 90도 회전
+  //     final img.Image rotatedImage = img.copyRotate(rgbImage, 270);
+  //
+  //     // RGB 데이터를 JPEG로 변환
+  //     final Uint8List jpegBytes = Uint8List.fromList(img.encodeJpg(rotatedImage, quality: 80));
+  //     print("JPEG 데이터 생성 완료: 크기 ${jpegBytes} 바이트");
+  //
+  //
+  //     return jpegBytes;
+  //   } catch (e) {
+  //     print("Error converting YUV to JPEG: $e");
+  //     return null;
+  //   }
+  // }
+
+  Future<Uint8List?> _processCapturedImage(XFile cameraImage) async {
     try {
-      // YUV 데이터의 각 Plane을 합쳐서 하나의 Uint8List로 반환
-      final WriteBuffer allBytes = WriteBuffer();
-      for (final Plane plane in cameraImage.planes) {
-        allBytes.putUint8List(plane.bytes);
+      // XFile 데이터를 img.Image 형식으로 변환
+      final Uint8List imageBytes = await cameraImage.readAsBytes();
+      final img.Image? decodedImage = img.decodeImage(imageBytes);
+
+      if (decodedImage == null) {
+        print("이미지 디코딩 실패");
+        return null;
       }
-      return allBytes.done().buffer.asUint8List();
+
+      // 이미지를 90도 회전
+      final img.Image rotatedImage = img.copyRotate(decodedImage, 270);
+
+      // JPEG로 변환
+      final Uint8List jpegBytes =
+          Uint8List.fromList(img.encodeJpg(rotatedImage, quality: 80));
+      print("JPEG 데이터 생성 완료: 크기 ${jpegBytes.length} 바이트");
+
+      return jpegBytes;
     } catch (e) {
-      print("Error converting CameraImage to raw bytes: $e");
+      print("Error processing captured image: $e");
       return null;
     }
   }
@@ -271,7 +332,8 @@ class _CameraScreenState extends State<CameraScreen> {
 
     if (_sttEnabled) {
       var systemLocale = await _flutterStt.systemLocale();
-      _currentLocaleId = systemLocale?.localeId ?? 'ko_KR';
+      _currentLocaleId = systemLocale?.localeId ?? '';
+      print("stt언어 설정: $_currentLocaleId");
       _startListening();
     }
   }
@@ -306,7 +368,7 @@ class _CameraScreenState extends State<CameraScreen> {
       try {
         await _flutterStt.listen(
           onResult: _onSpeechResult,
-          localeId: 'ko_KR',
+          localeId: _currentLocaleId,
           listenFor: Duration(seconds: 30),
           pauseFor: Duration(seconds: 5),
         );
@@ -318,7 +380,7 @@ class _CameraScreenState extends State<CameraScreen> {
         });
       }
     } else {
-      print('STT is not enabled or already listening.');
+      // print('STT is not enabled or already listening.');
     }
   }
 

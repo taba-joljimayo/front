@@ -48,6 +48,7 @@ dependencies:
   socket_io_client: ^3.0.2
   web_socket_channel: ^2.4.0
   speech_to_text: ^6.6.2
+  image: ^3.0.1
 
 dev_dependencies:
   flutter_test:
