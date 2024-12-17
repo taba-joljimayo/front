@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:math';
 
 import 'package:image/image.dart' as img;
-
 import 'package:dart_openai/dart_openai.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -12,6 +11,7 @@ import 'package:speech_to_text/speech_to_text.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:socket_io_client/socket_io_client.dart' as io;
+import 'package:audioplayers/audioplayers.dart';
 
 class CameraScreen extends StatefulWidget {
   final CameraDescription camera;
@@ -47,11 +47,15 @@ class _CameraScreenState extends State<CameraScreen> {
   int _retryCount = 0;
   int _maxRetryCount = 3;
 
+  late AudioPlayer player = AudioPlayer();
+
   // socket.io 객체
   late io.Socket _socket;
 
   // socket에서 오는 'result' 이벤트를 Stream으로 노출하기 위한 컨트롤러
   final _socketController = StreamController<dynamic>();
+
+  String _currentSay = '대화 대기 중';
 
   @override
   void initState() {
@@ -72,6 +76,8 @@ class _CameraScreenState extends State<CameraScreen> {
 
     // 소켓으로부터 오는 result 이벤트를 비동기 처리할 핸들러 시작
     _handleSocketResults();
+
+    player = AudioPlayer();
   }
 
   @override
@@ -79,6 +85,7 @@ class _CameraScreenState extends State<CameraScreen> {
     _cameraController.dispose();
     _socket.disconnect();
     _socketController.close(); // 스트림 컨트롤러 닫기
+    player.dispose();
     super.dispose();
   }
 
@@ -124,28 +131,20 @@ class _CameraScreenState extends State<CameraScreen> {
       try {
         // 수신 데이터 출력
         print("서버로부터 데이터 수신: $data (타입: ${data.runtimeType})");
+        print("수신 시간: ${DateTime.now()}");
 
         // 데이터가 정수인지 확인
-        if (data is int) {
-          final int result = data;
+        if (data is String) {
+          final String result = data;
 
-          if (result == 1) {
-            // 눈을 뜬 경우
-            closedEyesCount = 0; // 카운트를 0으로 리셋
-            print("두 눈을 뜸, 카운트 리셋: $closedEyesCount");
-          } else if (result == 0) {
-            // 눈을 감음 경우
-            closedEyesCount++; // 카운트 증가
-            print("두 눈을 감음 카운트: $closedEyesCount");
-
-            if (closedEyesCount == 10) {
-              // 30번 연속 눈 감음 감지 -> 챗봇이 먼저 말 걸기
-              print("30번 눈 감음 연속 감지, 대화 시작");
-              closedEyesCount = 0; // 카운트 리셋
-              _startConversation(); // 너가 먼저 말을 거는 로직
-            }
+          if (result == "sleep") {
+            _startConversation();
+            print("자는중");
+          } else if (result == "siren") {
+            _playWarningSound();
+          } else if (result == "open") {
+            _stopWarningSound();
           } else {
-            closedEyesCount++;
             print("예상치 못한 값: $result");
           }
         } else {
@@ -154,6 +153,24 @@ class _CameraScreenState extends State<CameraScreen> {
       } catch (e) {
         print("서버로부터 수신한 데이터 처리 중 오류 발생: $e");
       }
+    }
+  }
+
+  Future<void> _playWarningSound() async {
+    try {
+      print("경고 사운드 재생 시작");
+      await player.play(AssetSource('siren.mp3'));
+    } catch (e) {
+      print("사운드 재생 오류: $e");
+    }
+  }
+
+  Future<void> _stopWarningSound() async {
+    try {
+      print("경고 사운드 중지 시도");
+      await player.stop();
+    } catch (e) {
+      print("사운드 중지 오류: $e");
     }
   }
 
@@ -306,6 +323,7 @@ class _CameraScreenState extends State<CameraScreen> {
     _sttEnabled = await _flutterStt.initialize(
       onStatus: (status) {
         if (status == "listening") {
+          //print(" [STT] 듣는 중...");
           if (!_isListening) {
             _isListening = true;
           }
@@ -321,6 +339,7 @@ class _CameraScreenState extends State<CameraScreen> {
         }
       },
       onError: (error) {
+        //print(" [STT 오류] 오류 메시지: $error");
         _isListening = false;
         if (!_isSpeaking && !_isProcessing) {
           Future.delayed(Duration(seconds: 1), () {
@@ -332,7 +351,8 @@ class _CameraScreenState extends State<CameraScreen> {
 
     if (_sttEnabled) {
       var systemLocale = await _flutterStt.systemLocale();
-      _currentLocaleId = systemLocale?.localeId ?? '';
+      //_currentLocaleId = systemLocale?.localeId ?? '';
+      _currentLocaleId = 'ko_KR';
       print("stt언어 설정: $_currentLocaleId");
       _startListening();
     }
@@ -342,7 +362,7 @@ class _CameraScreenState extends State<CameraScreen> {
     await _flutterTts.setLanguage('ko-KR');
     print("TTS 언어가 'ko-KR'로 설정되었습니다.");
 
-    await _flutterTts.setSpeechRate(0.8);
+    await _flutterTts.setSpeechRate(0.6);
     await _flutterTts.setPitch(1.0);
     await _flutterTts.awaitSpeakCompletion(true);
     _flutterTts.setStartHandler(() {});
@@ -363,12 +383,13 @@ class _CameraScreenState extends State<CameraScreen> {
 
   Future<void> _startListening() async {
     if (_sttEnabled && !_isListening && !_isSpeaking && !_isProcessing) {
-      //print("Starting STT listening...");
+      print("Starting STT listening...");
       _isListening = true;
       try {
         await _flutterStt.listen(
           onResult: _onSpeechResult,
-          localeId: _currentLocaleId,
+          //localeId: _currentLocaleId,
+          localeId: 'ko-KR',
           listenFor: Duration(seconds: 30),
           pauseFor: Duration(seconds: 5),
         );
@@ -380,7 +401,7 @@ class _CameraScreenState extends State<CameraScreen> {
         });
       }
     } else {
-      // print('STT is not enabled or already listening.');
+      print('STT is not enabled or already listening.');
     }
   }
 
@@ -418,9 +439,13 @@ class _CameraScreenState extends State<CameraScreen> {
       _retryCount = 0;
 
       if (!_isProcessing && !_isSpeaking) {
+        // "대화 시작" 처리
         if (!_isConversationActive && userInput.contains("대화 시작")) {
-          _isConversationActive = true;
-          _isListening = false;
+          setState(() {
+            _isConversationActive = true;
+            _isListening = false;
+            _currentSay = '대화 중';
+          });
           _flutterStt.stop();
           _collisionST("대화를 시작합니다. 말씀하세요.");
           Future.delayed(Duration(seconds: 1), () {
@@ -429,6 +454,22 @@ class _CameraScreenState extends State<CameraScreen> {
           return;
         }
 
+        // "대화 종료" 처리
+        if (_isConversationActive && userInput.contains("대화 종료")) {
+          setState(() {
+            _isConversationActive = false;
+            _isListening = true;
+            _currentSay = '대화 대기 중';
+          });
+          _flutterStt.stop();
+          _collisionST("대화를 종료합니다. 필요하면 다시 '대화 시작'이라고 말해주세요.");
+          Future.delayed(Duration(seconds: 1), () {
+            _startListening();
+          });
+          return;
+        }
+
+        // 대화가 진행 중인 경우
         if (_isConversationActive) {
           _isListening = false;
           _flutterStt.stop();
@@ -500,15 +541,15 @@ class _CameraScreenState extends State<CameraScreen> {
     }
 
     List<String> retryMessages = [
-      "제가 잘 들을 수 있도록 다시 한번 말해주라?",
-      "죄송하지만 못 들었어요. 다시 말해 줄 수 있어?",
-      "정신 차려 ! 너 졸고 있는거 아니지?"
+      "제가 잘 들을 수 있도록 다시 한번 말해주세요?",
+      "죄송하지만 못 들었어요. 다시 말해 줄 수 있으신가요?",
+      "정신 차리세요 ! 혹시 졸고 있는거 아니죠?"
     ];
 
     final random = Random();
 
-    _responseWaitTimer = Timer(Duration(seconds: 10), () {
-      if (_awaitingUserResponse) {
+    _responseWaitTimer = Timer(Duration(seconds: 5), () {
+      if (_awaitingUserResponse && _isConversationActive) {
         String randomMessage =
             retryMessages[random.nextInt(retryMessages.length)];
         _collisionST(randomMessage);
@@ -580,22 +621,24 @@ class _CameraScreenState extends State<CameraScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final deviceHeight = MediaQuery.of(context).size.height; // 전체 화면 높이
+    final deviceWidth = MediaQuery.of(context).size.width; // 전체 화면 너비
+
     return Scaffold(
-      appBar: AppBar(
-        centerTitle: true,
-        title: Text(
-          '졸지마요',
-          style: TextStyle(fontSize: 25, fontWeight: FontWeight.w700),
-        ),
-      ),
       body: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
           Container(
+            child: Image.asset(
+              'assets/icon_eye.png',
+              height: deviceHeight * 0.21,
+            ),
+          ),
+          Container(
             decoration: BoxDecoration(borderRadius: BorderRadius.circular(20)),
             alignment: Alignment.center,
-            width: MediaQuery.of(context).size.width,
-            height: 550,
+            width: deviceWidth,
+            height: deviceHeight * 0.65, // 화면 높이의 60%
             child: ClipRRect(
               borderRadius: BorderRadius.circular(20),
               child: FutureBuilder<void>(
@@ -610,27 +653,30 @@ class _CameraScreenState extends State<CameraScreen> {
               ),
             ),
           ),
-          SizedBox(height: 20),
+          SizedBox(height: deviceHeight * 0.01),
           Text(
-            _isConversationActive ? "대화 중..." : "대화 대기 중",
+            _currentSay,
             style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
           ),
+          SizedBox(height: deviceHeight * 0.02),
           Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              ElevatedButton(
-                onPressed: () {
+              GestureDetector(
+                onTap: () {
                   if (_isStreaming) {
                     stopStreaming();
                   } else {
                     startStreaming();
                   }
                 },
-                child:
-                    Text(_isStreaming ? "Stop Streaming" : "Start Streaming"),
+                child: Image.asset(
+                  _isStreaming ? 'assets/stop.png' : 'assets/recording.png',
+                  height: 60, // 버튼의 이미지 크기
+                ),
               ),
             ],
-          ),
+          )
         ],
       ),
     );

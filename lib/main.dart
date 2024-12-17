@@ -3,6 +3,7 @@ import 'package:camera/camera.dart';
 import 'package:sleepy/screens/screen_camera.dart';
 import 'package:http/http.dart' as http;
 import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:sleepy/screens/screen_loading.dart';
 
 void main() async {
   // 플러그인 서비스 초기화 확인
@@ -11,11 +12,9 @@ void main() async {
   final cameras = await availableCameras();
   // 리스트 중 전면 카메라
   final frontCamera = cameras.firstWhere(
-          (camera) => camera.lensDirection == CameraLensDirection.front
-  );
+      (camera) => camera.lensDirection == CameraLensDirection.front);
 
   await dotenv.load(fileName: ".env");
-
 
   runApp(MyApp(camera: frontCamera));
 }
@@ -29,9 +28,7 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      home: CameraScreen(camera: camera),
+      home: LoadingScreen(camera: camera),
     );
   }
 }
-
-
